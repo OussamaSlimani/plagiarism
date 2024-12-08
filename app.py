@@ -1,102 +1,119 @@
-import json
-import os
-import numpy as np
 from flask import Flask, request, jsonify
-from sklearn.metrics.pairwise import cosine_similarity
-from tensorflow.keras.applications import VGG16
-from tensorflow.keras.applications.vgg16 import preprocess_input
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from werkzeug.utils import secure_filename
+import torch
+import torchvision.transforms as transforms
+from torchvision import models
+from PIL import Image
+import json
+import numpy as np
+from scipy.spatial.distance import cosine
+import os
 
-# Constants
-FEATURES_FILE = "features.json"
-UPLOAD_FOLDER = "uploads"
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
-
-# Flask Setup
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Load the pre-trained VGG16 model
-model = VGG16(weights="imagenet", include_top=False)
+# Load the ResNet-18 model pre-trained on ImageNet with updated weights
+from torchvision.models import ResNet18_Weights
 
+model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+model.eval()  # Set the model to evaluation mode
+
+# Define a transformation to preprocess the image
+transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Function to extract features from an image
 def extract_features(image_path):
-    """Extract deep learning features from an image."""
-    image = load_img(image_path, target_size=(224, 224))  # Resize to 224x224
-    image_array = img_to_array(image)  # Convert to NumPy array
-    image_array = np.expand_dims(image_array, axis=0)  # Add batch dimension
-    image_array = preprocess_input(image_array)  # Preprocess for VGG16
+    image = Image.open(image_path)
+
+    # If the image has an alpha channel (RGBA), convert it to RGB
+    if image.mode == 'RGBA':
+        image = image.convert('RGB')
+    elif image.mode == 'L':  # If the image is grayscale, convert it to RGB
+        image = image.convert('RGB')
+
+    # Apply transformations
+    image = transform(image).unsqueeze(0)  # Add batch dimension
+    with torch.no_grad():  # Disable gradient computation for inference
+        features = model(image)
     
-    # Extract features using the CNN model
-    features = model.predict(image_array)
-    features = features.flatten()  # Flatten the feature map
-    features = features / np.linalg.norm(features)  # Normalize the features
-    return features
+    # Use the output of the penultimate layer (before final classification layer)
+    return features.squeeze().numpy()  # Convert tensor to numpy array
 
-def load_features(file_path):
-    """Load features from a JSON file."""
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, 'r') as file:
-                data = json.load(file)
-                return [np.array(feature) for feature in data]
-        except json.JSONDecodeError:
-            return []
-    return []
+# Function to calculate cosine similarity between two feature vectors
+def cosine_similarity(feature1, feature2):
+    return 1 - cosine(feature1, feature2)
 
-def save_features(file_path, features):
-    """Save features to a JSON file."""
-    with open(file_path, 'w') as file:
-        json.dump([feature.tolist() for feature in features], file, indent=4)
+# Function to check and store new features in features.json
+def check_and_store_features(image_path, features_file='features.json'):
+    # Extract features from the new image
+    new_features = extract_features(image_path)
+    
+    # Load existing features from the JSON file
+    stored_features = []
 
-def find_similarity(new_feature, stored_features):
-    """Compare new feature with stored features."""
+    try:
+        with open(features_file, 'r') as f:
+            stored_features = json.load(f)
+    except FileNotFoundError:
+        # If the file does not exist, initialize it with an empty list
+        stored_features = []
+    except json.JSONDecodeError:
+        # If there is an error in decoding (file is empty or corrupt), initialize with an empty list
+        print(f"Warning: {features_file} is empty or corrupt. Initializing with an empty list.")
+        stored_features = []
+
+    # Compare the new features with stored ones
     for stored_feature in stored_features:
-        similarity = cosine_similarity([new_feature], [stored_feature])[0][0]
+        similarity = cosine_similarity(new_features, np.array(stored_feature))
         if similarity >= 0.9:
-            return True
-    return False
+            print("Plagiarism detected.")
+            return True  # Return True if plagiarism is detected
+    
+    # If no match found, store the new features in the JSON file
+    stored_features.append(new_features.tolist())  # Store as a list of lists
+    with open(features_file, 'w') as f:
+        json.dump(stored_features, f)
+    print("New features added.")
+    return False  # No plagiarism
 
-def allowed_file(filename):
-    """Check if the uploaded file is allowed (image format)."""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
+# API to upload image and check for plagiarism
 @app.route('/check_plagiarism', methods=['POST'])
 def check_plagiarism():
-    """API endpoint to check plagiarism."""
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-    file = request.files['file']
-    
-    if file.filename == '':
+    if 'image' not in request.files:
+        return jsonify({"error": "No image file provided"}), 400
+
+    image_file = request.files['image']
+    if image_file.filename == '':
         return jsonify({"error": "No selected file"}), 400
 
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
+    # Save the uploaded image temporarily
+    image_path = os.path.join('uploads', image_file.filename)
+    os.makedirs('uploads', exist_ok=True)
+    image_file.save(image_path)
 
-        try:
-            # Extract features from the uploaded image
-            new_feature = extract_features(file_path)
+    # Check for plagiarism
+    plagiarism_detected = check_and_store_features(image_path)
 
-            # Load stored features
-            stored_features = load_features(FEATURES_FILE)
-
-            # Check for similarity
-            if find_similarity(new_feature, stored_features):
-                return jsonify({"message": "Plagiarism detected."}), 200
-            else:
-                # Add new feature if not similar
-                stored_features.append(new_feature)
-                save_features(FEATURES_FILE, stored_features)
-                return jsonify({"message": "New features added to the database."}), 200
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+    if plagiarism_detected:
+        return jsonify({"message": "Plagiarism detected"}), 200
     else:
-        return jsonify({"error": "Invalid file format. Allowed formats are: png, jpg, jpeg."}), 400
+        return jsonify({"message": "No plagiarism detected, features stored"}), 200
 
-if __name__ == "__main__":
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
-    app.run(debug=True)
+# API to retrieve stored features (optional, for testing)
+@app.route('/stored_features', methods=['GET'])
+def stored_features():
+    try:
+        with open('features.json', 'r') as f:
+            features = json.load(f)
+        return jsonify(features), 200
+    except FileNotFoundError:
+        return jsonify({"message": "No stored features found."}), 404
+
+if __name__ == '__main__':
+    # Flask runs on port 5000 by default, but Render assigns a dynamic port
+    # Use the PORT environment variable provided by Render
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
