@@ -113,7 +113,4 @@ def stored_features():
         return jsonify({"message": "No stored features found."}), 404
 
 if __name__ == '__main__':
-    # Flask runs on port 5000 by default, but Render assigns a dynamic port
-    # Use the PORT environment variable provided by Render
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(debug=True)
