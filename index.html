@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Image Plagiarism Detection</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+      }
+      #result {
+        margin-top: 20px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        display: none;
+      }
+      .error {
+        color: red;
+      }
+      .success {
+        color: green;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Plagiarism Detection</h1>
+    <p>Upload an image to check for plagiarism:</p>
+
+    <form id="image-form">
+      <input type="file" id="image" accept="image/*" required />
+      <button type="submit">Check Plagiarism</button>
+    </form>
+
+    <div id="result"></div>
+
+    <script>
+      // Function to handle form submission and image upload
+      document
+        .getElementById("image-form")
+        .addEventListener("submit", function (event) {
+          event.preventDefault(); // Prevent form from submitting normally
+
+          const formData = new FormData();
+          const imageFile = document.getElementById("image").files[0];
+
+          if (!imageFile) {
+            alert("Please select an image file!");
+            return;
+          }
+
+          formData.append("image", imageFile);
+
+          // Show loading message while waiting for the API response
+          document.getElementById("result").style.display = "block";
+          document.getElementById("result").textContent = "Checking...";
+
+          // Send the image to the Flask API
+          fetch("http://127.0.0.1:5000/check_plagiarism", {
+            method: "POST",
+            body: formData,
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.message === "Plagiarism detected") {
+                document.getElementById("result").textContent =
+                  "Plagiarism detected!";
+                document.getElementById("result").className = "error";
+              } else {
+                document.getElementById("result").textContent =
+                  "No plagiarism detected. Features stored.";
+                document.getElementById("result").className = "success";
+              }
+            })
+            .catch((error) => {
+              console.error("Error:", error);
+              document.getElementById("result").textContent =
+                "An error occurred while processing the image.";
+              document.getElementById("result").className = "error";
+            });
+        });
+    </script>
+  </body>
+</html>
